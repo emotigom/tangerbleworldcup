@@ -1,0 +1,334 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>월드컵</title>
+<style>
+  body { display:flex; font-family:sans-serif; margin:0; }
+  #toolbar { width:160px; display:flex; flex-direction:column; gap:6px; padding:6px; }
+  button { padding:6px; }
+  canvas { border:1px solid #444; background:#67B14E; cursor:crosshair; display:block; margin:0 auto; }
+</style>
+</head>
+<body>
+  <div id="toolbar">
+    <button data-tool="start">① 시작지점 🔵</button>
+    <button data-tool="goal">② 골대(회전)</button>
+    <button data-tool="npc">③ 수비수🟧</button>
+    <button data-tool="wall">④ 장애물 🔺</button>
+    <button data-tool="eraser">⑤ 지우개</button>
+    <button id="clearAll">전체 삭제</button>
+    <button id="saveMap">맵 저장 (파일)</button>
+    <button id="loadMap">맵 불러오기 (파일)</button>
+    <p>숫자키 [1~5]로 선택</p>
+    <p>나머지는 직접클릭</p>
+    <p>골대회전은 우클릭</p>
+  </div>
+  <canvas id="gameCanvas"></canvas>
+
+<script>
+const canvas = document.getElementById("gameCanvas");
+const ctx = canvas.getContext("2d");
+
+// 격자 수 고정
+const cols = 16;
+const rows = 12;
+let gridSize = 40;
+const minCellSize = 30; // ✅ 최소 칸 크기
+
+// === 반응형 캔버스 크기 ===
+function resizeCanvas() {
+  const maxWidth = window.innerWidth - document.getElementById("toolbar").offsetWidth - 20;
+  const maxHeight = window.innerHeight - 20;
+  const cellW = Math.floor(maxWidth / cols);
+  const cellH = Math.floor(maxHeight / rows);
+  gridSize = Math.max(minCellSize, Math.min(cellW, cellH)); // ✅ 최소 크기 보장
+  canvas.width = gridSize * cols;
+  canvas.height = gridSize * rows;
+}
+window.addEventListener("resize", resizeCanvas);
+resizeCanvas();
+
+// === 이미지 불러오기 ===
+function loadImage(src) {
+  const img = new Image();
+  img.src = src;
+  return img;
+}
+const playerImages = {
+  up: loadImage("images/player/player_up.png"),
+  down: loadImage("images/player/player_down.png"),
+  left: loadImage("images/player/player_left.png"),
+  right: loadImage("images/player/player_right.png")
+};
+const goalImages = {
+  up: loadImage("images/goal/goal_up.png"),
+  down: loadImage("images/goal/goal_down.png"),
+  left: loadImage("images/goal/goal_left.png"),
+  right: loadImage("images/goal/goal_right.png")
+};
+
+// === 오브젝트 상태 ===
+let objects = [];
+let currentTool = "start";
+let player = { x: 1, y: 1, dir: "down" };
+let ball = null;
+
+// === 툴바 이벤트 ===
+document.querySelectorAll("#toolbar button[data-tool]").forEach(btn=>{
+  btn.addEventListener("click", ()=> currentTool = btn.dataset.tool);
+});
+document.addEventListener("keydown", e=>{
+  if (e.key==="1") currentTool="start";
+  if (e.key==="2") currentTool="goal";
+  if (e.key==="3") currentTool="npc";
+  if (e.key==="4") currentTool="wall";
+  if (e.key==="5") currentTool="eraser";
+});
+
+// 좌표 변환
+function getCanvasCellFromEvent(e) {
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  const x = Math.floor((e.clientX - rect.left) * scaleX / gridSize);
+  const y = Math.floor((e.clientY - rect.top) * scaleY / gridSize);
+  return {x,y};
+}
+
+// 클릭 배치
+canvas.addEventListener("click", e=>{
+  const {x,y} = getCanvasCellFromEvent(e);
+  if (currentTool==="eraser" || currentTool==="wall") return;
+  const idx = objects.findIndex(o=>o.x===x && o.y===y && o.type===currentTool);
+  if (idx>=0) objects.splice(idx,1);
+  else {
+    if (currentTool==="goal") objects.push({type:"goal",x,y,dir:"down"});
+    else if (currentTool==="npc") objects.push({type:"npc",x,y,dir:"down"});
+    else if (currentTool==="start") objects.push({type:"start",x,y});
+  }
+});
+
+// 장애물 드래그 배치/삭제 (이미 적용된 로직 유지)
+// (코드는 이미 포함되어 있으면 중복되지 않게 동작합니다)
+let isDragging = false;
+let dragMode = null; // "add" or "remove"
+
+canvas.addEventListener("mousedown", e => {
+  if (currentTool !== "wall") return;
+  const {x, y} = getCanvasCellFromEvent(e);
+  const exists = objects.some(o => o.type === "wall" && o.x === x && o.y === y);
+  dragMode = exists ? "remove" : "add";
+  isDragging = true;
+
+  if (dragMode === "add" && !exists) {
+    objects.push({type: "wall", x, y});
+  } else if (dragMode === "remove") {
+    objects = objects.filter(o => !(o.type === "wall" && o.x === x && o.y === y));
+  }
+});
+
+canvas.addEventListener("mousemove", e => {
+  if (!isDragging || currentTool !== "wall") return;
+  const {x, y} = getCanvasCellFromEvent(e);
+  const exists = objects.some(o => o.type === "wall" && o.x === x && o.y === y);
+
+  if (dragMode === "add" && !exists) {
+    objects.push({type: "wall", x, y});
+  } else if (dragMode === "remove" && exists) {
+    objects = objects.filter(o => !(o.type === "wall" && o.x === x && o.y === y));
+  }
+});
+
+canvas.addEventListener("mouseup", () => {
+  isDragging = false;
+  dragMode = null;
+});
+canvas.addEventListener("mouseleave", () => {
+  isDragging = false;
+  dragMode = null;
+});
+
+// 우클릭 회전
+canvas.addEventListener("contextmenu", e=>{
+  e.preventDefault();
+  const {x,y} = getCanvasCellFromEvent(e);
+  const obj = objects.find(o=>o.x===x && o.y===y && (o.type==="goal"||o.type==="npc"));
+  if (obj) {
+    const dirs=["up","right","down","left"];
+    obj.dir = dirs[(dirs.indexOf(obj.dir)+1)%4];
+  }
+});
+
+// 플레이어 이동/조작
+document.addEventListener("keydown", e=>{
+  if (e.key==="ArrowLeft"||e.key==="a") rotateLeft();
+  if (e.key==="ArrowRight"||e.key==="d") rotateRight();
+  if (e.key==="ArrowUp"||e.key==="w") moveForward();
+  if (e.key==="ArrowDown"||e.key==="s") moveBackward();
+  if (e.key===" ") { e.preventDefault(); shootBall(); }
+});
+document.addEventListener("keydown", e=>{
+  if (e.key==="Delete") {
+    objects = objects.filter(o=>!(o.x===player.x && o.y===player.y && o.type!=="start"));
+  }
+});
+function rotateLeft(){player.dir={up:"left",left:"down",down:"right",right:"up"}[player.dir];}
+function rotateRight(){player.dir={up:"right",right:"down",down:"left",left:"up"}[player.dir];}
+function moveForward(){
+  let {x,y,dir}=player;
+  if(dir==="up"&&y>0&&!blocked(x,y-1))player.y--;
+  if(dir==="down"&&y<rows-1&&!blocked(x,y+1))player.y++;
+  if(dir==="left"&&x>0&&!blocked(x-1,y))player.x--;
+  if(dir==="right"&&x<cols-1&&!blocked(x+1,y))player.x++;
+}
+function moveBackward(){
+  let {x,y,dir}=player;
+  if(dir==="up"&&y<rows-1&&!blocked(x,y+1))player.y++;
+  if(dir==="down"&&y>0&&!blocked(x,y-1))player.y--;
+  if(dir==="left"&&x<cols-1&&!blocked(x+1,y))player.x++;
+  if(dir==="right"&&x>0&&!blocked(x-1,y))player.x--;
+}
+function blocked(x,y){return objects.some(o=>(o.type==="wall"||o.type==="npc")&&o.x===x&&o.y===y);}
+
+// 공 슛
+function shootBall(){
+  if(ball) return;
+  let dx=0,dy=0;
+  if(player.dir==="up")dy=-1;
+  if(player.dir==="down")dy=1;
+  if(player.dir==="left")dx=-1;
+  if(player.dir==="right")dx=1;
+  ball={x:player.x,y:player.y,dx,dy};
+}
+function deltaToDir(dx,dy){if(dx===1)return"right";if(dx===-1)return"left";if(dy===1)return"down";if(dy===-1)return"up";return null;}
+
+// 그리기
+function drawGrid(){
+  ctx.strokeStyle="#ccc";
+  for(let x=0;x<=cols;x++){ctx.beginPath();ctx.moveTo(x*gridSize,0);ctx.lineTo(x*gridSize,canvas.height);ctx.stroke();}
+  for(let y=0;y<=rows;y++){ctx.beginPath();ctx.moveTo(0,y*gridSize);ctx.lineTo(canvas.width,y*gridSize);ctx.stroke();}
+}
+function drawObjects(){
+  objects.forEach(o=>{
+    const px=o.x*gridSize, py=o.y*gridSize;
+    if(o.type==="goal"){const img=goalImages[o.dir];if(img&&img.complete)ctx.drawImage(img,px,py,gridSize,gridSize);else{ctx.fillStyle="white";ctx.fillRect(px+6,py+6,gridSize-12,gridSize-12);}}
+    else if(o.type==="npc"){ctx.fillStyle="orange";ctx.fillRect(px+5,py+5,gridSize-10,gridSize-10);}
+    else if(o.type==="wall"){ctx.fillStyle="red";ctx.beginPath();ctx.moveTo(px+gridSize/2,py);ctx.lineTo(px+gridSize,py+gridSize);ctx.lineTo(px,py+gridSize);ctx.closePath();ctx.fill();}
+    else if(o.type==="start"){ctx.fillStyle="blue";ctx.beginPath();ctx.arc(px+gridSize/2,py+gridSize/2,gridSize/3,0,Math.PI*2);ctx.fill();}
+  });
+}
+function drawPlayer(){
+  const px=player.x*gridSize,py=player.y*gridSize;
+  const img=playerImages[player.dir];
+  if(img&&img.complete)ctx.drawImage(img,px,py,gridSize,gridSize);
+  else{ctx.fillStyle="black";ctx.fillRect(px+6,py+6,gridSize-12,gridSize-12);}
+}
+function drawBall(){
+  if(ball){const px=ball.x*gridSize+gridSize/2,py=ball.y*gridSize+gridSize/2;
+    ctx.fillStyle="white";ctx.beginPath();ctx.arc(px,py,8,0,Math.PI*2);ctx.fill();}
+}
+
+// 게임 루프
+function update(){
+  if(ball){
+    ball.x+=ball.dx; ball.y+=ball.dy;
+    if(blocked(ball.x,ball.y)){ball=null;return;}
+    const goal=objects.find(o=>o.type==="goal"&&o.x===ball.x&&o.y===ball.y);
+    if(goal){
+      const ballDir=deltaToDir(ball.dx,ball.dy);
+      const opposite={up:"down",down:"up",left:"right",right:"up"};
+      if(ballDir&&(opposite[goal.dir]===ballDir)){
+        alert("골인! 클리어!"); ball=null; return;
+      } else {ball=null; return;}
+    }
+    if(ball&&(ball.x<0||ball.y<0||ball.x>=cols||ball.y>=rows)) ball=null;
+  }
+}
+function render(){ctx.clearRect(0,0,canvas.width,canvas.height);drawGrid();drawObjects();drawPlayer();drawBall();}
+function gameLoop(){update();render();requestAnimationFrame(gameLoop);}
+gameLoop();
+
+// ---------------------------
+// 아래는 문제되던 버튼 동작 추가 코드
+// ---------------------------
+
+// 전체 삭제: start(시작지점)만 남기기
+document.getElementById("clearAll").addEventListener("click", () => {
+  objects = objects.filter(o => o.type === "start");
+  // player 위치는 유지 (원하면 초기화 가능)
+});
+
+// 맵 저장(파일) - File System Access API 사용 가능하면 Save-as 창 띄우고, 없으면 다운로드 폴백
+async function saveMapToFile(data) {
+  if (window.showSaveFilePicker) {
+    try {
+      const opts = [{
+        description: 'JSON 파일',
+        accept: { 'application/json': ['.json'] }
+      }];
+      const handle = await window.showSaveFilePicker({ types: opts });
+      const writable = await handle.createWritable();
+      await writable.write(JSON.stringify(data, null, 2));
+      await writable.close();
+      alert("맵이 저장되었습니다.");
+      return;
+    } catch (err) {
+      if (err.name !== 'AbortError') alert("파일 저장 중 오류가 발생했습니다: " + err.message);
+      return;
+    }
+  }
+
+  // 폴백: anchor 다운로드
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  const now = new Date();
+  const filename = `map-${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}-${String(now.getHours()).padStart(2,'0')}${String(now.getMinutes()).padStart(2,'0')}${String(now.getSeconds()).padStart(2,'0')}.json`;
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+  alert("맵 파일이 다운로드되었습니다.");
+}
+
+document.getElementById("saveMap").addEventListener("click", async () => {
+  const data = { objects, player };
+  await saveMapToFile(data);
+});
+
+// 맵 불러오기 (파일 선택 후 파싱)
+document.getElementById("loadMap").addEventListener("click", () => {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = "application/json,application/*";
+  input.onchange = e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => {
+      try {
+        const data = JSON.parse(ev.target.result);
+        // 기존 형식(배열)과 새 형식({objects, player}) 모두 지원
+        if (Array.isArray(data)) {
+          objects = data;
+        } else if (data.objects) {
+          objects = data.objects;
+          if (data.player) player = data.player;
+        } else {
+          throw new Error("맵 파일 형식이 올바르지 않습니다.");
+        }
+        alert("맵을 불러왔습니다.");
+      } catch (err) {
+        alert("맵 파일을 읽을 수 없습니다: " + err.message);
+      }
+    };
+    reader.readAsText(file);
+  };
+  input.click();
+});
+</script>
+</body>
+</html>
